@@ -1,42 +1,48 @@
-// Pin untuk sensor ultrasonik
+// === Pin untuk sensor ultrasonik ===
 const int trigPin = 13;   // Pin trigger
 const int echoPin = 12;   // Pin echo
 
-// Pin untuk sensor pH
-const int sensorPin = A0;
+// === Pin untuk sensor pH ===
+const int sensorPin = A0; // Pin analog sensor pH
 
-// Pin untuk relay
+// === Pin untuk relay ===
 #define RELAY_PIN 2       // Pin GPIO untuk relay
 
-// Variabel untuk sensor ultrasonik
+// === Variabel untuk sensor ultrasonik ===
 long duration;
 int distance;
 
-// Variabel untuk sensor pH
+// === Variabel untuk sensor pH ===
 float phValue = 0;
 const int sampleSize = 10;    // Ukuran sampel untuk rata-rata
 float phReadings[sampleSize]; // Array untuk menyimpan sampel pH
 int sampleIndex = 0;
 
-// Fungsi untuk membaca nilai pH dengan filter
-float readPH(int pin) {
-  // Baca nilai tegangan sensor
-  int rawValue = analogRead(pin);
-  float voltage = 5.0 / 1024.0 * rawValue; // Konversi ke tegangan
+// Tinggi wadah
+const int tinggiWadah = 19;
 
-  // Hitung nilai pH berdasarkan kalibrasi
+// === Library LCD ===
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// Inisialisasi LCD dengan alamat I2C 0x27 dan ukuran 16x2
+const int col = 16;
+const int row = 2;
+LiquidCrystal_I2C lcd(0x27, col, row);
+
+// === Fungsi membaca nilai pH dengan filter ===
+float readPH(int pin) {
+  int rawValue = analogRead(pin);
+  float voltage = 5.0 / 1024.0 * rawValue;
   float ph = 7.00 + ((3.69 - voltage) / 0.092);
 
-  // Validasi data: Abaikan nilai tidak masuk akal
   if (ph < 0 || ph > 14) {
-    return phValue; // Kembalikan nilai terakhir yang valid
+    return phValue;
   }
 
-  // Simpan pembacaan ke dalam array untuk moving average
   phReadings[sampleIndex] = ph;
   sampleIndex = (sampleIndex + 1) % sampleSize;
 
-  // Hitung rata-rata dari sampel
   float total = 0;
   for (int i = 0; i < sampleSize; i++) {
     total += phReadings[i];
@@ -45,65 +51,97 @@ float readPH(int pin) {
 }
 
 void setup() {
-  // Inisialisasi pin untuk sensor ultrasonik
+  // Inisialisasi pin
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
-
-  // Inisialisasi pin untuk relay
   pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, LOW);  // Pastikan relay mati saat awal
+  digitalWrite(RELAY_PIN, LOW);
 
-  // Inisialisasi array sampel dengan nilai awal 7.0 (netral)
+  // Inisialisasi nilai awal sampel pH
   for (int i = 0; i < sampleSize; i++) {
     phReadings[i] = 7.0;
   }
 
-  // Inisialisasi Serial Monitor
+  // Inisialisasi Serial
   Serial.begin(115200);
+
+  // Penundaan untuk memastikan perangkat stabil
+  delay(1000);
+
+  // Inisialisasi LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+
   Serial.println("Sistem Siap!");
 }
 
 void loop() {
   // === SENSOR ULTRASONIK ===
-  // Mengirim sinyal trigger pada sensor ultrasonik
   digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
   digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
 
-  // Membaca sinyal echo dan menghitung durasi pantulnya
+  // Membaca durasi pantulan
   duration = pulseIn(echoPin, HIGH);
-
-  // Hitung jarak (cm)
   if (duration > 0) {
-    distance = duration * 0.034 / 2;
+    distance = duration * 0.034 / 2; // Konversi ke cm
     Serial.print("Jarak: ");
     Serial.print(distance);
     Serial.println(" cm");
   } else {
-    distance = -1;  // Menandakan error
+    distance = -1; // Jika tidak ada sinyal pantulan
     Serial.println("Tidak ada jarak yang terdeteksi.");
   }
 
+  // Hitung ketinggian air
+  int tinggiAir = (distance > 0) ? tinggiWadah - distance : -1;
+
   // === SENSOR pH ===
-  phValue = readPH(sensorPin); // Membaca pH dengan filter
+  phValue = readPH(sensorPin);
   Serial.print("Nilai pH: ");
   Serial.println(phValue, 2);
 
   // === LOGIKA KONTROL RELAY ===
-  if (distance > 0 && distance <= 20) {
-    // Jarak air di bawah atau sama dengan 20 cm
-    Serial.println("Ketinggian air terlalu rendah, pompa mati.");
-    digitalWrite(RELAY_PIN, LOW);
-  } else if (phValue < 5 || phValue > 9) {
-    // Nilai pH di luar rentang 5-9
-    Serial.println("pH di luar rentang aman, pompa mati.");
-    digitalWrite(RELAY_PIN, LOW);
+  String pumpStatus = "Mati"; // Status default pompa
+  if (phValue >= 5 && phValue <= 9) { // Rentang pH aman
+    if (tinggiAir >= 0 && tinggiAir <= 14) {
+      // Pompa hidup jika ketinggian air belum penuh
+      Serial.println("Kondisi aman, pompa hidup.");
+      digitalWrite(RELAY_PIN, HIGH);
+      pumpStatus = "Hidup";
+    } else {
+      // Pompa mati jika air penuh
+      Serial.println("Air penuh, pompa mati.");
+      digitalWrite(RELAY_PIN, LOW);
+    }
   } else {
-    // Semua kondisi aman
-    Serial.println("Kondisi aman, pompa menyala.");
-    digitalWrite(RELAY_PIN, HIGH);
+    // Pompa mati jika pH tidak aman
+    Serial.println("pH tidak aman, pompa mati.");
+    digitalWrite(RELAY_PIN, LOW);
+  }
+
+  // === TAMPILKAN DATA PADA LCD ===
+  lcd.clear();
+
+  // Baris 1: pH dan Status Pompa
+  lcd.setCursor(0, 0);
+  lcd.print("pH : ");
+  lcd.print(phValue, 2);
+  lcd.print(" ");
+  lcd.print(pumpStatus);
+
+  // Baris 2: Ketinggian Air dan Status
+  lcd.setCursor(0, 1);
+  if (tinggiAir >= 0) {
+    lcd.print("Air: ");
+    lcd.print(tinggiAir);
+    lcd.print(" cm ");
+    lcd.print((tinggiAir <= 14) ? "Aman" : "Penuh");
+  } else {
+    lcd.print("Air: N/A");
   }
 
   // Jeda pembacaan selama 1 detik
